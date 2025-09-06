@@ -1,0 +1,9 @@
+[package]
+name = "bespoke"
+version = "0.1.0"
+edition = "2024"
+description = "An interpreter for the Bespoke esolang"
+
+[dependencies]
+im = "15.1.0"
+malachite = "0.6.1"
