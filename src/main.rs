@@ -10,6 +10,7 @@ use std::rc::Rc as Arc;
 const ZERO: Integer = Integer::const_from_unsigned(0);
 const ONE: Integer = Integer::const_from_unsigned(1);
 const TEN: Integer = Integer::const_from_unsigned(10);
+const NEGATIVE_ONE: Integer = Integer::const_from_signed(-1);
 
 #[derive(Debug)]
 enum Error {
@@ -180,7 +181,7 @@ fn parse(src: &str) -> Vec<Inst> {
                 // heap storage/retrieval
                 1 => {
                     let subcommand = ds.next().expect("instruction 1 missing subcommand");
-                    if subcommand % 2 != 0 {
+                    if !subcommand.is_multiple_of(2) {
                         instructions.push(Inst::Load);
                     } else {
                         instructions.push(Inst::Store);
@@ -215,7 +216,7 @@ fn parse(src: &str) -> Vec<Inst> {
                 }
                 5 => {
                     let subcommand = ds.next().expect("instruction 5 missing subcommand");
-                    if subcommand % 2 != 0 {
+                    if !subcommand.is_multiple_of(2) {
                         instructions.push(Inst::InputInt);
                     } else {
                         instructions.push(Inst::InputChar);
@@ -223,7 +224,7 @@ fn parse(src: &str) -> Vec<Inst> {
                 }
                 6 => {
                     let subcommand = ds.next().expect("instruction 6 missing subcommand");
-                    if subcommand % 2 != 0 {
+                    if !subcommand.is_multiple_of(2) {
                         instructions.push(Inst::OutputInt);
                     } else {
                         instructions.push(Inst::OutputChar);
@@ -346,6 +347,7 @@ struct Env<Reading, Writing> {
 
 impl<Reading: Read, Writing: Write> Env<Reading, Writing> {
     const UNDERFLOW: Flow = Flow::Error(Error::StackOutOfBounds);
+    #[allow(clippy::unbuffered_bytes)]
     pub fn new(input: Reading, output: Writing) -> Self {
         Self {
             stack: vec![],
@@ -392,9 +394,10 @@ impl<Reading: Read, Writing: Write> Env<Reading, Writing> {
         if let Some(byte) = self.input_peek.take() {
             Ok(Some(byte))
         } else {
-            match self.input.next().transpose().map_err(Error::Io)? {
-                Some(byte) => Ok(Some(byte)),
-                None => return Ok(None),
+            match self.input.next() {
+                Some(Err(e)) => Err(Error::Io(e))?,
+                Some(Ok(byte)) => Ok(Some(byte)),
+                None => Ok(None),
             }
         }
     }
@@ -417,10 +420,9 @@ impl<Reading: Read, Writing: Write> Env<Reading, Writing> {
             }
             buffer.push(c);
         }
-        match String::from_utf8(buffer) {
-            Ok(string) => Ok(Some(string.chars().next().unwrap())),
-            Err(_) => Ok(Some(char::REPLACEMENT_CHARACTER)),
-        }
+        String::from_utf8(buffer).map_or(Ok(Some(char::REPLACEMENT_CHARACTER)), |string| {
+            Ok(Some(string.chars().next().unwrap()))
+        })
     }
     pub fn run_insts(&mut self, insts: &[Inst]) -> R<()> {
         if insts.is_empty() {
@@ -536,10 +538,9 @@ impl<Reading: Read, Writing: Write> Env<Reading, Writing> {
                 self.push(n);
             }
             InputChar => {
-                let codepoint = match self.get_char()? {
-                    Some(c) => u32::from(c).into(),
-                    None => Integer::from(-1),
-                };
+                let codepoint = self
+                    .get_char()?
+                    .map_or(NEGATIVE_ONE, |c| u32::from(c).into());
                 self.push(codepoint);
             }
             OutputInt => {
@@ -560,7 +561,7 @@ impl<Reading: Read, Writing: Write> Env<Reading, Writing> {
             } => {
                 let cond = self.pop()?;
                 let run_body = if cond != ZERO { then_body } else { else_body };
-                self.run_insts(&run_body)?;
+                self.run_insts(run_body)?;
             }
             Call(name) => {
                 let body = self
@@ -609,15 +610,7 @@ impl<Reading: Read, Writing: Write> Env<Reading, Writing> {
                     use std::cmp::Ordering::*;
                     match exp.cmp(&ZERO) {
                         // negative, interpreted in Bespoke as exp-th root of base
-                        Less => {
-                            if let Ok(exp) = u64::try_from(&-exp) {
-                                base.floor_root(exp)
-                            } else {
-                                // is this correct? i suppose it is so long as all our numbers
-                                // are less than 2 ** 2 ** 64, which seems relatively safe
-                                ONE
-                            }
-                        }
+                        Less => u64::try_from(&-exp).map_or(ONE, |e| base.floor_root(e)),
                         Equal => ONE,
                         // exponentiation by squaring algorithm
                         Greater => {
@@ -713,5 +706,5 @@ existing in pain without you"#;
     if let Err(e) = result {
         eprintln!("{e}");
     }
-    print!("{}", String::from_utf8(buffer).unwrap())
+    print!("{}", String::from_utf8(buffer).unwrap());
 }
